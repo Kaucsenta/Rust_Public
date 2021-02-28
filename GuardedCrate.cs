@@ -7,6 +7,8 @@ using Oxide.Core;
 using Rust.Ai.HTN;
 using UnityEngine;
 using VLB;
+using Facepunch;
+using UnityEngine.SceneManagement;
 
 namespace Oxide.Plugins
 {
@@ -22,22 +24,24 @@ namespace Oxide.Plugins
         private const string NpcPrefab = "assets/prefabs/npc/scientist/htn/scientist_full_any.prefab";
         private const string PlanePrefab = "assets/prefabs/npc/cargo plane/cargo_plane.prefab";
         private const string UsePerm = "guardedcrate.use";
-        
-        private static readonly LayerMask CollisionLayer = LayerMask.GetMask("Water", "Tree",  "Debris", "Clutter",  "Default", "Resource", "Construction", "Terrain", "World", "Deployed");
+		private Dictionary<BasePlayer, PlayerStats> _EventPlayers = new Dictionary<BasePlayer, PlayerStats>();
+        public static List<HackableLockedCrate> _EventCrateList = new List<HackableLockedCrate>();
+        private static readonly LayerMask CollisionLayer = LayerMask.GetMask("Water", "Tree", "Debris", "Clutter", "Default", "Resource", "Construction", "Terrain", "World", "Deployed");
         private readonly HashSet<CrateEvent> _crateEvents = new HashSet<CrateEvent>();
         private PluginConfig _config;
         private PluginData _stored;
         private static GuardedCrate _plugin;
+        private bool Debug = false;
 
         #endregion
-        
+
         #region Config
-        
+
         private class PluginConfig
         {
             [JsonProperty("AutoEvent (enables auto event spawns)")]
             public bool EnableAutoEvent = true;
-            
+
             [JsonProperty("AutoEventDuration (time until new event spawns)")]
             public float AutoEventDuration = 1800f;
         }
@@ -50,57 +54,62 @@ namespace Oxide.Plugins
         {
             public readonly List<EventSetting> Events = new List<EventSetting>();
         }
-        
+        public class PlayerStats
+        {
+            public int KilledEnemy;
+            public uint crateNetID; 
+        }
+
         private class EventSetting
         {
             [JsonProperty("EventDuration (duration the event will be active for)")]
             public float EventDuration;
-            
+
             [JsonProperty("EventName (event name)")]
             public string EventName;
 
             [JsonProperty("AutoHack (enables auto hacking of crates when an event is finished)")]
             public bool AutoHack = true;
-            
+
             [JsonProperty("AutoHackSeconds (countdown for crate to unlock in seconds)")]
             public float AutoHackSeconds = 60f;
 
             [JsonProperty("UseKits (use custom kits plugin)")]
             public bool UseKits = false;
-            
+
             [JsonProperty("Kits (custom kits)")]
             public List<string> Kits = new List<string>();
-            
+
             [JsonProperty("NpcName (custom name)")]
             public string NpcName;
-            
+
             [JsonProperty("NpcCount (number of guards to spawn)")]
             public int NpcCount;
-            
+
             [JsonProperty("NpcHealth (health guards spawn with)")]
             public float NpcHealth;
-            
+
             [JsonProperty("NpcRadius (max distance guards will roam)")]
             public float NpcRadius;
-            
+
             [JsonProperty("NpcAggression (max aggression distance guards will target)")]
             public float NpcAggression;
 
             [JsonProperty("MarkerColor (marker color)")]
             public string MarkerColor;
-            
+
             [JsonProperty("MarkerBorderColor (marker border color)")]
             public string MarkerBorderColor;
-            
+
             [JsonProperty("MarkerOpacity (marker opacity)")]
             public float MarkerOpacity = 1f;
 
             [JsonProperty("UseLoot (use custom loot table)")]
             public bool UseLoot = false;
-            
+
             [JsonProperty("MaxLootItems (max items to spawn in crate)")]
             public int MaxLootItems = 6;
-            
+
             [JsonProperty("CustomLoot (items to spawn in crate)")]
             public List<LootItem> CustomLoot = new List<LootItem>();
         }
@@ -120,47 +129,47 @@ namespace Oxide.Plugins
 
         protected override void LoadDefaultMessages()
         {
-            lang.RegisterMessages (new Dictionary<string, string>
+            lang.RegisterMessages(new Dictionary<string, string>
             {
                 { "InvalidSyntax", "gc start|stop" },
                 { "Permission", "No permission" },
                 { "CreateEvent", "<color=#DC143C>Guarded Crate</color>: New event starting stand by." },
                 { "CleanEvents", "<color=#DC143C>Guarded Crate</color>: Cleaning up events." },
                 { "EventStarted", "<color=#DC143C>Guarded Crate</color>: <color=#EDDf45>{0}</color>, event started at <color=#EDDf45>{1}</color>, eliminate the guards before they leave in <color=#EDDf45>{2}</color>." },
-                { "EventEnded", "<color=#DC143C>Guarded Crate</color>: The event ended at the location <color=#EDDf45>{0}</color>, <color=#EDDf45>{1}</color> cleared the event!" },
+                { "EventEnded", "<color=#DC143C>Guarded Crate</color>: The event ended at the location <color=#EDDf45>{0}</color>." },
                 { "EventClear", "<color=#DC143C>Guarded Crate</color>: The event ended at <color=#EDDf45>{0}</color>; You were not fast enough; better luck next time!" },
             }, this);
         }
-        
+
         protected override void LoadDefaultConfig() => _config = new PluginConfig();
 
         protected override void LoadConfig()
         {
             base.LoadConfig();
-            
+
             try
             {
                 _config = Config.ReadObject<PluginConfig>();
-                
+
                 if (_config == null)
                 {
                     throw new Exception();
                 }
-                
+
                 PrintToConsole($"New config created {Name}.json.");
             }
             catch
             {
                 Config.WriteObject(_config, false, $"{Interface.Oxide.ConfigDirectory}/{Name}.jsonError");
-                
+
                 PrintError("The configuration file contains an error and has been replaced with a default config.\n" + "The error configuration file was saved in the .jsonError extension");
-                
+
                 LoadDefaultConfig();
             }
-            
+
             SaveConfig();
         }
-        
+
         protected override void SaveConfig() => Config.WriteObject(_config);
 
         private void OnServerInitialized()
@@ -172,9 +181,9 @@ namespace Oxide.Plugins
 
             if (_config.EnableAutoEvent)
             {
-                timer.Every(_config.AutoEventDuration, () => StartEvent(null, new string[] {}));
+                timer.Every(_config.AutoEventDuration, () => StartEvent(null, new string[] { }));
             }
-            
+
             timer.Every(30f, RefreshEvents);
         }
 
@@ -198,7 +207,7 @@ namespace Oxide.Plugins
         private object CanBuild(Planner planner, Construction prefab, Construction.Target target) => OnCanBuild(planner.GetOwnerPlayer());
 
         #endregion
-        
+
         #region Core
 
         private void RegisterDefaults()
@@ -270,7 +279,7 @@ namespace Oxide.Plugins
             cmd.AddChatCommand("gc", this, GCChatCommand);
             cmd.AddConsoleCommand("gc", this, nameof(GCConsoleCommand));
         }
-        
+
         private void StartEvent(BasePlayer player, string[] args)
         {
             EventSetting eventSettings = _stored.Events.FirstOrDefault(x => x.EventName == string.Join(" ", args)) ?? _stored.Events.GetRandom();
@@ -278,12 +287,12 @@ namespace Oxide.Plugins
             CrateEvent crateEvent = new CrateEvent();
 
             crateEvent.PreEvent(eventSettings);
-
+            
             if (player == null)
             {
                 return;
             }
-            
+
             player.ChatMessage(Lang("CreateEvent", player.UserIDString));
         }
 
@@ -295,7 +304,7 @@ namespace Oxide.Plugins
             {
                 return;
             }
-            
+
             player.ChatMessage(Lang("CleanEvents", player.UserIDString));
         }
 
@@ -308,20 +317,20 @@ namespace Oxide.Plugins
                 crateEvent?.RefreshEvent();
             }
         }
-        
+
         private IEnumerator DespawnRoutine()
         {
             for (int i = _crateEvents.Count - 1; i >= 0; i--)
             {
                 CrateEvent crateEvent = _crateEvents.ElementAt(i);
-                
+
                 crateEvent.StopEvent();
-                
+
                 DelEvent(crateEvent);
 
                 yield return new WaitForSeconds(0.75f);
             }
-            
+
             yield return null;
         }
 
@@ -331,11 +340,55 @@ namespace Oxide.Plugins
 
         private void OnAIDeath(HTNPlayer npc, BasePlayer player)
         {
-            CrateEvent crateEvent = _crateEvents.FirstOrDefault(x => x.NpcPlayers.Contains(npc));
+            try
+            {
+                CrateEvent crateEvent = _crateEvents.FirstOrDefault(x => x.NpcPlayers.Contains(npc));
+                if (Debug == true) Puts("Event crate" + crateEvent._crate.net.ID);
+                if (player != null)
+                {
+                    if (crateEvent != null)
+                    {
+                        if (crateEvent.NpcPlayers.Contains(npc))
+                        {
+                            if (_EventPlayers.ContainsKey(player))
+                            {
+                                
+                                if(_EventPlayers[player].crateNetID == crateEvent._crate.net.ID)
+                                {
+                                    if(Debug == true)  Puts("Debug_5");
+                                    _EventPlayers[player].KilledEnemy += 1;
+                                }
+                                else
+                                {
+                                    if(Debug == true)  Puts("Debug_5.0.1");
+                                    _EventPlayers[player].crateNetID = crateEvent._crate.net.ID;
+                                    _EventPlayers[player].KilledEnemy = 1;
+                                }
+                            }
+                            else
+                            {
+                                if(Debug == true)  Puts("Debug_5.1");
+                                _EventPlayers.Add(player, new PlayerStats()
+                                {
+                                    KilledEnemy = 1,
+                                    crateNetID = crateEvent._crate.net.ID
+                                });
+                            }
 
-            crateEvent?.OnNPCDeath(npc, player);
+                            foreach (var e in _EventPlayers)
+                            {
+                                if(Debug == true)  Puts("Debug_5.2 " + e.Key + " " + e.Value.KilledEnemy);
+                            }
+                        }
+                    }
+                }
+                crateEvent?.OnNPCDeath(npc, player);
+            }
+            catch (NullReferenceException e)
+            {
+            }
+			
         }
-        
         private object OnCanBuild(BasePlayer player)
         {
             if (player != null && _crateEvents.FirstOrDefault(x => x.Distance(player.ServerPosition)) != null)
@@ -346,23 +399,25 @@ namespace Oxide.Plugins
             return null;
         }
 
-        private class CrateEvent
+        private class CrateEvent : RustPlugin
         {
             public readonly List<HTNPlayer> NpcPlayers = new List<HTNPlayer>();
+            
             private MapMarkerGenericRadius _marker;
-            private HackableLockedCrate _crate;
+            public HackableLockedCrate _crate;
             private CargoPlane _plane;
             private Vector3 _position;
             private Coroutine _coroutine;
             private Timer _eventTimer;
             private EventSetting _eventSettings;
 
+           
             public void PreEvent(EventSetting eventSettings)
             {
                 _eventSettings = eventSettings;
-                
+
                 SpawnPlane();
-                
+
                 _plugin?.AddEvent(this);
             }
 
@@ -397,7 +452,7 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 _marker.SendUpdate();
             }
 
@@ -405,13 +460,13 @@ namespace Oxide.Plugins
             {
                 _coroutine = CommunityEntity.ServerInstance.StartCoroutine(SpawnAI());
             }
-            
+
             private void StopSpawnRoutine()
             {
                 if (_coroutine != null)
                 {
                     CommunityEntity.ServerInstance.StopCoroutine(_coroutine);
-                    
+
                     _coroutine = null;
                 }
             }
@@ -420,11 +475,11 @@ namespace Oxide.Plugins
             {
                 _eventTimer = _plugin.timer.Once(_eventSettings.EventDuration, () => StopEvent());
             }
-            
+
             private void ResetDespawnTimer()
             {
                 _eventTimer?.Destroy();
-                
+
                 StartDespawnTimer();
             }
 
@@ -435,11 +490,11 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 _plane.Spawn();
                 _plane.gameObject.GetOrAddComponent<CargoComponent>().SetEvent(this);
             }
-            
+
             private void SpawnCrate()
             {
                 _marker = GameManager.server.CreateEntity(MarkerPrefab, _position) as MapMarkerGenericRadius;
@@ -451,7 +506,7 @@ namespace Oxide.Plugins
                 _marker.enableSaving = false;
                 _marker.color1 = GetColor(_eventSettings.MarkerColor);
                 _marker.color2 = GetColor(_eventSettings.MarkerBorderColor);
-                _marker.alpha  = _eventSettings.MarkerOpacity;
+                _marker.alpha = _eventSettings.MarkerOpacity;
                 _marker.radius = 0.5f;
                 _marker.Spawn();
 
@@ -471,7 +526,7 @@ namespace Oxide.Plugins
                 _marker.transform.localPosition = Vector3.zero;
                 _marker.SendUpdate();
             }
-            
+
             private void SpawnNpc(Vector3 position, Quaternion rotation)
             {
                 HTNPlayer npc = GameManager.server.CreateEntity(NpcPrefab, position, rotation) as HTNPlayer;
@@ -504,7 +559,7 @@ namespace Oxide.Plugins
                     Vector3 position = PositionAround(_position, 5f, (360 / _eventSettings.NpcCount * i));
 
                     SpawnNpc(position, Quaternion.LookRotation(position - _position));
-                    
+
                     yield return new WaitForSeconds(0.75f);
                 }
 
@@ -516,13 +571,13 @@ namespace Oxide.Plugins
                 int MAX_LOOP_LIMIT = 1000;
 
                 List<LootItem> lootItems = new List<LootItem>();
-                
+
                 while (lootItems.Count < _eventSettings.MaxLootItems && MAX_LOOP_LIMIT-- > 0)
                 {
                     LootItem lootItem = _eventSettings.CustomLoot.GetRandom();
 
                     if (lootItems.Contains(lootItem)) continue;
-                        
+
                     lootItems.Add(lootItem);
                 }
 
@@ -535,24 +590,24 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 List<LootItem> lootItems = CreateLoot();
-                
+
                 _crate.inventory.Clear();
-                
+
                 ItemManager.DoRemoves();
-                
+
                 _crate.inventory.capacity = lootItems.Count;
 
                 foreach (LootItem lootItem in lootItems)
                 {
                     ItemDefinition item = ItemManager.FindItemDefinition(lootItem.Shortname);
-                    
+
                     if (item == null) continue;
 
                     _crate.inventory.AddItem(item, UnityEngine.Random.Range(lootItem.MinAmount, lootItem.MaxAmount));
                 }
-                
+
                 lootItems.Clear();
             }
 
@@ -572,13 +627,13 @@ namespace Oxide.Plugins
                 if (_eventSettings.AutoHack)
                 {
                     _crate.hackSeconds = HackableLockedCrate.requiredHackSeconds - _eventSettings.AutoHackSeconds;
-                    _crate.StartHacking();                    
+                    _crate.StartHacking();
                 }
-                
+
                 _crate.shouldDecay = true;
-                _crate.RefreshDecay();                
+                _crate.RefreshDecay();
             }
-            
+
             private void DespawnMarker()
             {
                 if (!IsValid(_marker))
@@ -589,14 +644,14 @@ namespace Oxide.Plugins
                 _marker.SetParent(null);
                 _marker.Kill();
             }
-            
+
             private void DespawnPlane()
             {
                 if (!IsValid(_plane))
                 {
                     return;
                 }
-                
+
                 _plane.Kill();
             }
 
@@ -621,25 +676,25 @@ namespace Oxide.Plugins
             {
                 if (!NpcPlayers.Remove(npc))
                 {
+
                     return;
                 }
-                
                 if (NpcPlayers.Count > 0)
                 {
+
                     ResetDespawnTimer();
                     return;
                 }
 
                 if (player != null)
                 {
-                    Message("EventEnded", GetGrid(_position), player.displayName);
-                    
+                    Message("EventEnded", GetGrid(_position));
                     StopEvent(true);
                 }
                 else
                 {
                     Message("EventClear", GetGrid(_position));
-                    
+
                     StopEvent();
                 }
             }
@@ -654,7 +709,7 @@ namespace Oxide.Plugins
             private CrateEvent _crateEvent;
             private CargoPlane _plane;
             private bool _hasDropped;
-            
+
             private void Awake()
             {
                 _plane = GetComponent<CargoPlane>();
@@ -665,12 +720,12 @@ namespace Oxide.Plugins
             {
                 float time = Mathf.InverseLerp(0.0f, _plane.secondsToTake, _plane.secondsTaken);
 
-                if (!_hasDropped && (double) time >= 0.5)
+                if (!_hasDropped && (double)time >= 0.5)
                 {
                     _hasDropped = true;
                     
                     _crateEvent.StartEvent(transform.position);
-                    
+                    _EventCrateList.Add(_crateEvent._crate);
                     Destroy(this);
                 }
             }
@@ -690,7 +745,7 @@ namespace Oxide.Plugins
             private void Awake()
             {
                 _crate = gameObject.GetComponent<BaseEntity>();
-                
+
                 _crate.GetComponent<Rigidbody>().drag = 0.7f;
 
                 SpawnChute();
@@ -703,11 +758,11 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 _hasLanded = true;
 
                 RemoveChute();
-                    
+
                 Destroy(this);
             }
 
@@ -718,7 +773,7 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 _chute.enableSaving = false;
                 _chute.Spawn();
                 _chute.SetParent(_crate);
@@ -732,15 +787,112 @@ namespace Oxide.Plugins
                 {
                     return;
                 }
-                
+
                 _chute.Kill();
             }
         }
 
         #endregion
-        
+
         #region Helpers
 
+        private object CanLootEntity(BasePlayer player, BaseEntity entity)
+        {
+            if (_EventCrateList.Contains(entity))
+            {
+                if (Debug == true) PrintToChat(_EventCrateList.Count().ToString());
+                if (PlayerAllowedLoot(player, _EventPlayers, entity.net.ID))
+                {
+                    if(Debug == true)  PrintToChat("Debug_1");
+                    return null;
+                }
+                else
+                {
+                    if(Debug == true)  PrintToChat("Debug_2");
+                    return false;
+                }
+            }
+            else
+            {
+                if (Debug == true) PrintToConsole("Debug_99");
+                return null;
+            }
+
+        }
+
+        void OnEntityKill(HackableLockedCrate entity)
+        {
+            if (_EventCrateList.Contains(entity))
+            {
+                _EventCrateList.Remove(entity);
+                foreach (BasePlayer tempplayer in _EventPlayers.Keys)
+                {
+                    if (_EventPlayers[tempplayer].crateNetID == entity.net.ID)
+                        _EventPlayers[tempplayer].KilledEnemy = 0;
+                }
+            }
+        }
+
+        private Boolean PlayerAllowedLoot(BasePlayer player, Dictionary<BasePlayer, PlayerStats> eventPlayers, uint crateNetID)
+        {
+            List<int> listofUniqeScores = new List<int>();
+            List<BasePlayer> allowedplayers = new List<BasePlayer>();
+            if(Debug == true)  PrintToChat("Debug_3.1 " + eventPlayers.Count());
+            foreach (BasePlayer tempplayer in eventPlayers.Keys)
+            {
+                if(eventPlayers[tempplayer].crateNetID == crateNetID)
+                    listofUniqeScores.Add(eventPlayers[tempplayer].KilledEnemy);
+            }
+            listofUniqeScores = listofUniqeScores.Distinct().ToList();
+            listofUniqeScores.Sort();
+            listofUniqeScores.Reverse();
+            if(Debug == true)  PrintToChat("Debug_3.3 " +  eventPlayers.Count());
+            foreach (BasePlayer tempplayer in eventPlayers.Keys)
+            {
+                if(Debug == true)  PrintToChat("Debug_4");
+                if (eventPlayers[tempplayer].KilledEnemy == listofUniqeScores[0])
+                {
+                    if(Debug == true)  PrintToChat("Debug_5");
+                    allowedplayers.Add(tempplayer);
+                    try
+                    {
+                        List<ulong> team = tempplayer.Team.members;
+                        if(team != null && team.Count >= 1)
+                        {
+                            if(Debug == true)  PrintToChat("Debug_20");
+                            foreach (var teammember in team)
+                            {
+                                if(Debug == true)  PrintToChat("Debug_19");
+                                if (BasePlayer.FindByID(teammember) != tempplayer)
+                                {
+                                    if(Debug == true)  PrintToChat("Debug_18");
+                                    allowedplayers.Add(BasePlayer.FindByID(teammember));
+                                }
+                            }
+                        }
+                    }
+                    catch (NullReferenceException e)
+                    {
+
+                    }
+                }
+            }
+            string listofplayers = "Player(s) who kill the most and get the loot:\n";
+            foreach (var e in allowedplayers)
+            {
+                listofplayers += e.displayName + "\n"; 
+            }
+            SendReply(player, listofplayers);
+
+            if (allowedplayers.Contains(player))
+            {
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
         private string Lang(string key, string id = null, params object[] args) => string.Format(lang.GetMessage(key, this, id), args);
         
         private static Vector3 PositionAround(Vector3 position, float radius, float angle)
@@ -819,7 +971,7 @@ namespace Oxide.Plugins
         #endregion
 
         #region Command
-        
+
         private void GCChatCommand(BasePlayer player, string command, string[] args)
         {
             if (!permission.UserHasPermission(player.UserIDString, UsePerm))

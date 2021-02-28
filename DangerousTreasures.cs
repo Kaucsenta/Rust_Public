@@ -103,6 +103,8 @@ namespace Oxide.Plugins
     {
         [PluginReference] Plugin LustyMap, ZoneManager, Economics, ServerRewards, Map, GUIAnnouncements, MarkerManager, CopyPaste, Clans, Friends, Kits, NPCKits;
 
+        private bool Debug = false;
+
         void OnPluginLoaded(Plugin plugin)
         {
             if (plugin.Title == "LustyMap")
@@ -186,12 +188,18 @@ namespace Oxide.Plugins
         int obstructionLayer = LayerMask.GetMask("Player (Server)", "Construction", "Deployed", "Clutter");
         static int heightLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed", "Clutter");
         List<int> BlockedLayers = new List<int> { (int)Layer.Water, (int)Layer.Construction, (int)Layer.Trigger, (int)Layer.Prevent_Building, (int)Layer.Deployed, (int)Layer.Tree, (int)Layer.Clutter };
+        private Dictionary<BasePlayer, PlayerStats> _EventPlayers = new Dictionary<BasePlayer, PlayerStats>();
         //int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default", "Construction", "Deployed");
         int terrainLayer = LayerMask.GetMask("Terrain", "World", "Default"); //already checked
 
         static Dictionary<string, MonInfo> allowedMonuments = new Dictionary<string, MonInfo>();
         static Dictionary<string, MonInfo> monuments = new Dictionary<string, MonInfo>();  // positions of monuments on the server
 
+        public class PlayerStats
+        {
+            public int KilledEnemy;
+            public uint crateNetID;
+        }
         class MonInfo
         {
             public Vector3 Position;
@@ -1858,18 +1866,64 @@ namespace Oxide.Plugins
             return null;
         }
 
-        void OnPlayerDeath(BasePlayer player)
+        void OnEntityKill(StorageContainer entity)
         {
-            if (!init || !player.IsValid() || !player.IsNpc)
+            if (treasureChests.ContainsKey(entity.net.ID))
+            {
+                treasureChests.Remove(entity.net.ID);
+                foreach (BasePlayer tempplayer in _EventPlayers.Keys)
+                {
+                    if (_EventPlayers[tempplayer].crateNetID == entity.net.ID)
+                        _EventPlayers[tempplayer].KilledEnemy = 0;
+                }
+            }
+        }
+
+        private void OnEntityDeath(BasePlayer npc, HitInfo hitInfo)
+        {
+            BasePlayer attacker = hitInfo?.InitiatorPlayer;
+
+            if (!init || !npc.IsValid() || !npc.IsNpc)
                 return;
 
-            var chest = TreasureChest.GetNPC(player.userID);
+            var chest = TreasureChest.GetNPC(npc.userID);
 
             if (chest != null)
             {
-                player.svActiveItemID = 0;
-                player.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
-                if (_config.NPC.DespawnInventory) player.inventory.Strip();
+                npc.svActiveItemID = 0;
+                npc.SendNetworkUpdate(BasePlayer.NetworkQueue.Update);
+                if (_config.NPC.DespawnInventory) npc.inventory.Strip();
+
+
+                if (_EventPlayers.ContainsKey(attacker))
+                {
+
+                    if (_EventPlayers[attacker].crateNetID == chest.container.net.ID)
+                    {
+                        if (Debug == true) Puts("Debug_5");
+                        _EventPlayers[attacker].KilledEnemy += 1;
+                    }
+                    else
+                    {
+                        if (Debug == true) Puts("Debug_5.0.1");
+                        _EventPlayers[attacker].crateNetID = chest.container.net.ID;
+                        _EventPlayers[attacker].KilledEnemy = 1;
+                    }
+                }
+                else
+                {
+                    if (Debug == true) Puts("Debug_5.1");
+                    _EventPlayers.Add(attacker, new PlayerStats()
+                    {
+                        KilledEnemy = 1,
+                        crateNetID = chest.container.net.ID
+                    });
+                }
+
+                foreach (var e in _EventPlayers)
+                {
+                    if (Debug == true) Puts("Debug_5.2 " + e.Key + " " + e.Value.KilledEnemy);
+                }
 
                 if (_config.Unlock.WhenNpcsDie && chest.npcs.Count <= 1)
                 {
@@ -1882,8 +1936,8 @@ namespace Oxide.Plugins
                     });
                 }
             }
-        }
 
+        }
         void OnEntitySpawned(BaseNetworkable entity)
         {
             if (!init || entity == null || entity.transform == null)
@@ -1940,7 +1994,7 @@ namespace Oxide.Plugins
             Unsubscribe(nameof(CanBeTargeted));
             Unsubscribe(nameof(OnNpcTarget));
             Unsubscribe(nameof(CanBradleyApcTarget));
-            Unsubscribe(nameof(OnPlayerDeath));
+            Unsubscribe(nameof(OnEntityDeath));
         }
 
         object CanBuild(Planner planner, Construction prefab, Construction.Target target)
@@ -1985,6 +2039,93 @@ namespace Oxide.Plugins
                     foreach (var target in BasePlayer.activePlayerList)
                         Message(target, msg("OnChestOpened", target.UserIDString, player.displayName, posStr));
                 }
+            }
+        }
+        private object CanLootEntity(BasePlayer player, BaseEntity entity)
+        {
+            if(treasureChests.ContainsKey(entity.net.ID))
+            {
+                if (Debug == true) PrintToChat("Debug_-1");
+                var chest = treasureChests[entity.net.ID];
+
+                if (Debug == true) PrintToChat("Debug_0");
+                if (PlayerAllowedLoot(player, _EventPlayers, entity.net.ID))
+                {
+                    if (Debug == true) PrintToChat("Debug_1");
+                    return null;
+                }
+                else
+                {
+                    if (Debug == true) PrintToChat("Debug_2");
+                    return false;
+                }
+
+            }
+            else
+            {
+                if (Debug == true) PrintToChat("Debug_99");
+                return null;
+
+            }
+        }
+        private Boolean PlayerAllowedLoot(BasePlayer player, Dictionary<BasePlayer, PlayerStats> eventPlayers, uint crateNetID)
+        {
+            List<int> listofUniqeScores = new List<int>();
+            List<BasePlayer> allowedplayers = new List<BasePlayer>();
+            if (Debug == true) PrintToChat("Debug_3.1 " + eventPlayers.Count());
+            foreach (BasePlayer tempplayer in eventPlayers.Keys)
+            {
+                if (eventPlayers[tempplayer].crateNetID == crateNetID)
+                    listofUniqeScores.Add(eventPlayers[tempplayer].KilledEnemy);
+            }
+            listofUniqeScores = listofUniqeScores.Distinct().ToList();
+            listofUniqeScores.Sort();
+            listofUniqeScores.Reverse();
+            if (Debug == true) PrintToChat("Debug_3.3 " + eventPlayers.Count());
+            foreach (BasePlayer tempplayer in eventPlayers.Keys)
+            {
+                if (Debug == true) PrintToChat("Debug_4");
+                if (eventPlayers[tempplayer].KilledEnemy == listofUniqeScores[0])
+                {
+                    if (Debug == true) PrintToChat("Debug_5");
+                    allowedplayers.Add(tempplayer);
+                    try
+                    {
+                        List<ulong> team = tempplayer.Team.members;
+                        if (team != null && team.Count >= 1)
+                        {
+                            if (Debug == true) PrintToChat("Debug_20");
+                            foreach (var teammember in team)
+                            {
+                                if (Debug == true) PrintToChat("Debug_19");
+                                if (BasePlayer.FindByID(teammember) != tempplayer)
+                                {
+                                    if (Debug == true) PrintToChat("Debug_18");
+                                    allowedplayers.Add(BasePlayer.FindByID(teammember));
+                                }
+                            }
+                        }
+                    }
+                    catch (NullReferenceException e)
+                    {
+
+                    }
+                }
+            }
+            string listofplayers = "Player(s) who kill the most and get the loot:\n";
+            foreach (var e in allowedplayers)
+            {
+                listofplayers += e.displayName + "\n";
+            }
+            SendReply(player, listofplayers);
+
+            if (allowedplayers.Contains(player))
+            {
+                return true;
+            }
+            else
+            {
+                return false;
             }
         }
 
@@ -2235,7 +2376,7 @@ namespace Oxide.Plugins
             {
                 if (_config.NPC.Enabled)
                 {
-                    Subscribe(nameof(OnPlayerDeath));
+                    Subscribe(nameof(OnEntityDeath));
                 }
 
                 if (_config.TruePVE.AllowPVPAtEvents || _config.TruePVE.ServerWidePVP)
@@ -2266,7 +2407,7 @@ namespace Oxide.Plugins
                 Unsubscribe(nameof(OnItemRemovedFromContainer));
                 Unsubscribe(nameof(OnLootEntity));
                 Unsubscribe(nameof(CanBuild));
-                Unsubscribe(nameof(OnPlayerDeath));
+                Unsubscribe(nameof(OnEntityDeath));
             }
         }
 
@@ -2715,6 +2856,7 @@ namespace Oxide.Plugins
 
             SubscribeHooks(true);
             treasureChests.Add(uid, chest);
+
             chest.SetUnlockTime(unlockTime);
 
             var posStr = FormatGridReference(container.transform.position);
@@ -2807,7 +2949,7 @@ namespace Oxide.Plugins
             {
                 Subscribe(nameof(CanBeTargeted));
                 Subscribe(nameof(OnEntitySpawned));
-                Subscribe(nameof(OnPlayerDeath));
+                Subscribe(nameof(OnEntityDeath));
                 Subscribe(nameof(OnNpcTarget));
                 Subscribe(nameof(CanBradleyApcTarget));
                 chest.Invoke(chest.SpawnNpcs, 1f);
